@@ -57,7 +57,7 @@ app.use(function(err, req, res, next) {
 });
 
 // setup mongodb/monk
-app.set('dbURI', process.env.MONGOLAB_URI || 'localhost/ttt-slack');
+app.set('dbURI', process.env.MONGOLAB_URI || 'localhost:27017/ttt-slack');
 app.set('db', require('monk')(app.get('dbURI')));
 
 module.exports = app;
