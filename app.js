@@ -60,4 +60,10 @@ app.use(function(err, req, res, next) {
 app.set('dbURI', process.env.MONGOLAB_URI || 'localhost:27017/ttt-slack');
 app.set('db', require('monk')(app.get('dbURI')));
 
+// post to the anuko proxy
+app.set('ttt-proxy-uri', process.env.TTT_PROXY_URI || 'https://ttt-proxy-staging.herokuapp.com/track-time');
+
+// configure the slack token
+app.set('slack-token', process.env.SLACK_TOKEN);
+
 module.exports = app;
