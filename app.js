@@ -1,3 +1,4 @@
+var assert = require('assert');
 var express = require('express');
 var path = require('path');
 var favicon = require('serve-favicon');
@@ -59,5 +60,13 @@ app.use(function(err, req, res, next) {
 // setup mongodb/monk
 app.set('dbURI', process.env.MONGOLAB_URI || 'localhost:27017/ttt-slack');
 app.set('db', require('monk')(app.get('dbURI')));
+
+// post to the anuko proxy
+assert(process.env.TTT_PROXY_URI != null, 'must set TTT_PROXY_URI in the environment');
+app.set('ttt-proxy-uri', process.env.TTT_PROXY_URI);
+
+// configure the slack token
+assert(process.env.SLACK_TOKEN != null, 'must set SLACK_TOKEN in the environment');
+app.set('slack-token', process.env.SLACK_TOKEN);
 
 module.exports = app;
