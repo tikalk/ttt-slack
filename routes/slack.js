@@ -3,9 +3,15 @@ var router = express.Router();
 var util = require('util');
 var moment = require('moment');
 var request = require('request');
+require('moment-timezone');
+
 router.preferredBase = '/slack';
 
+const IN_TZ  = process.env.LOCAL_TIMEZONE || 'Asia/Jerusalem';
+const OUT_TZ = process.env.ANUKO_TIMEZONE || 'GMT';
 const timeForms = [ 'hh:mmA', 'hh:mm', 'hA', 'hhA', 'HH', 'H:mm', 'HH:mm' ];
+
+moment.tz.setDefault(IN_TZ);
 
 /* GET users listing. */
 router.get('/', function(req, res, next) {
@@ -21,8 +27,12 @@ router.get('/', function(req, res, next) {
 // not-null-and-not-undefined check (I'm used to coffeescript)
 function some(x) { return x != null; }
 
+function string_repeat(s, n) {
+  return new Array(n + 1).join(s);
+}
+
 function isCommand(command) {
-  return [ 'username', 'password', 'project', 'task', 'in', 'out', 'track', 'note', 'status' ].indexOf(command) !== -1;
+  return [ 'username', 'password', 'project', 'task', 'in', 'out', 'track', 'status' ].indexOf(command) !== -1;
 }
 
 function isUpdate(command) { return !(command === 'out' || command === 'track'); }
@@ -33,14 +43,14 @@ function userStatus(data) {
     data.in = util.format('%s (%s)', start.format(timeForms[0]), start.fromNow());
   }
 
+  if (some(data.password)) {
+    data.password = string_repeat('*', data.password.length);
+  }
+
   var out = util.format(
     'username: *%s*, password: *%s*, project: *%s*, task: *%s*, started: *%s*',
     data.username, data.password, data.project, data.task, data.in
   );
-
-  if (some(data.note)) {
-    out += util.format('\nnote: *%s*', data.note);
-  }
 
   return out;
 }
@@ -53,23 +63,17 @@ function userStatus(data) {
 **   -d "start=09:00" \
 **   -d "finish=10:00" \
 **   -d "date=2016-03-12" \
-**   -d "note=hello" \
 **   https://ttt-proxy-staging.herokuapp.com/track-time */
 function mongoToAnuko(data) {
   var tmp = {};
-  var now = moment(data.out);
 
   tmp.login    = data.username;
   tmp.password = data.password;
   tmp.project  = data.project;
   tmp.task     = data.task;
-  tmp.start    = moment(data.in).format('HH:mm');
-  tmp.finish   = now.format('HH:mm');
-  tmp.date     = now.format('YYYY-MM-DD');
-
-  if (some(data.note)) {
-    tmp.note = data.note;
-  }
+  tmp.start    = moment(data.in).tz(OUT_TZ).format('HH:mm');
+  tmp.finish   = moment(data.out).tz(OUT_TZ).format('HH:mm');
+  tmp.date     = moment(data.date).tz(OUT_TZ).format('YYYY-MM-DD');
 
   return tmp;
 }
@@ -113,9 +117,22 @@ router.post('/', function(req, res, next) {
   var args = req.body.text.split(/\s+/);
   var command = args.shift();
 
-  if (some(command)) {
-    command = command.toLowerCase();
+  // we want coercion here - '' -> false
+  if (!command) {
+    res.send('`/ttt` - shows this help text\n' +
+      '`/ttt status` - shows information associated with your account\n' +
+      '`/ttt username &lt;username&gt;` - sets your username for Anuko\n' +
+      '`/ttt password &lt;password&gt;` - sets your password for Anuko\n' +
+      '`/ttt project &lt;project&gt;` - sets the project name of your current task\n' +
+      '`/ttt task &lt;task&gt;` - sets the name of your current ask\n' +
+      '`/ttt in` - begins tracking your current task from the current time\n' +
+      '`/ttt out` - ends tracking your current task and attempts to send task info to Anuko\n' +
+      '`/ttt track &lt;project&gt; &lt;task&gt; &lt;start-time&gt; &lt;finish-time&gt; [&lt;date&gt;]` - record a task directly to Anuko\n' +
+      'time example: `09:00AM`, date example: `2016-12-31`');
+    return;
   }
+
+  command = command.toLowerCase();
 
   if (!isCommand(command)) {
     res.status(400);
@@ -140,11 +157,6 @@ router.post('/', function(req, res, next) {
       }
     }
 
-    if (command === 'note') {
-      var tmp = /\w+\s+(.*)/.exec(req.body.text);
-      args = [ tmp[0] ]; // the note
-    }
-
     var set = {};
 
     // because precomputed properties :(
@@ -154,7 +166,6 @@ router.post('/', function(req, res, next) {
       case 'in'      : set.in       = args[0]; break;
       case 'project' : set.project  = args[0]; break;
       case 'task'    : set.task     = args[0]; break;
-      case 'note'    : set.note     = args[0]; break;
       case 'status'  : set.id       = args[0]; break;
     }
 
@@ -191,10 +202,9 @@ router.post('/', function(req, res, next) {
 
       if (command === 'track') {
         if (args.length < 4) {
-          res.status(400).send('not enough arguments: `/ttt track &lt;project&gt; &lt;task&gt; &lt;start-time&gt; &lt;finish-time&gt; [&lt;note&gt;]`');
+          res.status(400).send('not enough arguments: `/ttt track &lt;project&gt; &lt;task&gt; &lt;start-time&gt; &lt;finish-time&gt; [&lt;date&gt;]`');
           return;
         }
-
 
         args[2] = moment(args[2], timeForms, true);
 
@@ -216,14 +226,18 @@ router.post('/', function(req, res, next) {
 
         args[3] = args[3].toDate();
 
+        if (some(args[4])) {
+          // store in "Anuko-time" as we're referring to an exact date
+          args[4] = moment.tz(args[4], 'YYYY-MM-DD', true, OUT_TZ);
 
-        args.splice(4); // remove the split/mangled note
-        var tmp = /\w+\s+\w+\s+\w+\s+\w+\s+(.*)/.exec(req.body.text);
-        if (some(tmp)) {
-          args.push(tmp[1]); // the note
+          if (!args[4].isValid()) {
+            res.status(400);
+            sendf(res, 'optional `date` argument was in the wrong format (example: `%s`)', moment().format('YYYY-MM-DD'));
+            return;
+          }
         }
 
-        [ 'project', 'task', 'in', 'out', 'note' ].forEach(function (p) {
+        [ 'project', 'task', 'in', 'out', 'date' ].forEach(function (p) {
           data[p] = args.shift();
         });
       }
@@ -245,7 +259,7 @@ router.post('/', function(req, res, next) {
       var form = mongoToAnuko(data);
 
       res.status(200);
-      sendf(res, 'registering *%s* task with Amuko, try again if not successful in 5 seconds', data.task);
+      sendf(res, 'registering *%s* task with Amuko, try again if not successful in 10 seconds', data.task);
 
       request.post({ url: uri, form: form }, function (err, post, body) {
         var ack = 'unsuccessful - please try again';
@@ -253,14 +267,15 @@ router.post('/', function(req, res, next) {
         if (!some(err) && post.statusCode === 200) {
           ack = util.format('task *%s* has been recorded in Amuko! (%s) :smile:', data.task, body || err);
 
-          // clear the task & start-time fields
-          users.findAndModify({ id: id }, { $unset: { in: true, note: true } });
+          // only clear the start-time on '/ttt out'
+          if (command === 'out') {
+            users.findAndModify({ id: id }, { $unset: { in: true } });
+          }
         }
 
         // even the POST back to Slack can fail - this is a one-off, hit-or-miss acknowledgement
         request.post({ url: req.body.response_url, json: true, body: { text: ack } });
       });
-
     }
   );
 });
